@@ -1,0 +1,137 @@
+---
+title: "Week 1 work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+**Goal: To review on how to use survival models, learn JMBayes2 and how to use it**
+
+## Review on survival models
+Source: https://www.geeksforgeeks.org/survival-analysis-in-r/
+
+Survival analysis is the prediction of events at a specified time. 
+
+There are two methods of survival analysis in R:
+* Kaplan-Meier 
+* Cox proportional hazard model
+
+### Kaplan-Meier 
+Used for censored data, not based on underlying probability distribution
+```{r}
+library(survival)
+lung
+```
+
+Fitting the model
+```{r}
+survival_function = survfit(Surv(lung$time, lung$status == 2) ~ 1)
+survival_function
+```
+
+Plotting the function
+```{r}
+plot(survival_function, main = "Kaplan-Meier", xlab = "Number of days", 
+     ylab = "Prob of survival")
+```
+
+### Cox proportional hazard model
+Uses the hazard function, which considers independent variables in regression.
+
+Also does not assume an underlying probability, but assumes that the hazards are constant over time.
+
+More useful to measure instantaneous risk of deaths, often delivers better results because more volatile with data and features.
+
+Tends to drop sharper as time increases. 
+```{r}
+cox_mod <- coxph(Surv(lung$time, lung$status == 2) ~., data = lung)
+
+summary(cox_mod)
+```
+
+Fitting the model and plotting
+```{r}
+cox <- survfit(cox_mod)
+
+plot(cox, main = "Cox proportional hazard model", xlab = "Number of days", 
+     ylab = "Prob of survival")
+```
+
+## More advanced example of survival models
+Source: https://rviews.rstudio.com/2017/09/25/survival-analysis-with-r/
+
+Loading the data and packages
+```{r}
+library(survival)
+library(ranger)
+library(ggplot2)
+library(dplyr)
+library(ggfortify) ## for better survival plots
+
+data(veteran)
+head(veteran)
+```
+
+### Kaplan Meier Analysis
+```{r}
+km <- with(veteran, Surv(time, status))
+head(km, 80)
+```
+
+Fitting model with estimates at 1, 30, 60, and 90 days
+```{r}
+km_fit <- survfit(Surv(time, status) ~ 1, data = veteran)
+summary(km_fit, times = c(1, 30, 60, 90*(1:10)))
+```
+
+Plotting
+```{r}
+autoplot(km_fit)
+```
+
+Survival curves by treatment
+```{r}
+km_trt_fit <- survfit(Surv(time, status) ~ trt, data = veteran)
+autoplot(km_trt_fit)
+```
+ 
+Plotting patients by age
+```{r}
+vet <- mutate(veteran, AG = ifelse((age < 60), "LT60", "OV60"),
+              AG = factor(AG),
+              trt = factor(trt, labels = c("standard", "test")),
+              prior = factor(prior, labels = c("NO", "Yes")))
+
+km_AG_fit <- survfit(Surv(time, status) ~ AG, data = vet)
+autoplot(km_AG_fit)
+```
+
+### Cox analysis
+Fitting model
+```{r}
+cox <- coxph(Surv(time, status) ~ trt + celltype + karno + diagtime + age
+             + prior, data = vet)
+summary(cox)
+```
+
+Plotting
+```{r}
+cox_fit <- survfit(cox)
+autoplot(cox_fit)
+```
+
+### Notes on cox regression models
+* Need to be cautious when interpreting results because it assumes covariates are constant, and in many cases there are not
+
+* Look more into Concordance stats if wanting to use ROC curves to assess model performance
+
+Aalen's additive regression model shows how covariates change over time
+```{r}
+aa_fit <- aareg(Surv(time, status) ~ trt + celltype +
+                  karno + diagtime + age + prior, data = vet)
+
+aa_fit
+```
+```{r}
+autoplot(aa_fit)
+```
+
