@@ -135,3 +135,90 @@ aa_fit
 autoplot(aa_fit)
 ```
 
+## JMbayes2 model
+Source: https://drizopoulos.github.io/JMbayes2/articles/JMbayes2.html
+Primary function is `jm()`
+
+### Basic use example
+Goal: to assess the strength of the association between the risk of death and levels of serum bilirubin
+```{r}
+library(JMbayes2)
+pbc2.id$status2 <- as.numeric(pbc2.id$status != 'alive')
+CoxFit <- coxph(Surv(years, status2) ~ sex, data = pbc2.id)
+```
+
+Describe patient profiles for biomarker using a linear mixed model
+```{r}
+fml <- lme(log(serBilir) ~ year * sex, data = pbc2, random = ~ year | id) 
+```
+
+Linking survival and longitudinal models
+```{r}
+jointFit1 <- jm(CoxFit, fml, time_var = "year")
+summary(jointFit1)
+```
+
+* Assume the instantaneous risk of an event at a specific time $t$ is associated with the value of the linear predictor of the longitudinal outcome at the same point $t$
+
+Traceplots:
+* MCMC stands for Markov chain Monte Carlo
+* Traceplots are used to determine how many iteration it will take to summarize the posterior distribution (convergence) (think Bayes and conditional probabilities)
+  * If model converges, then traceplot moves around the mode of distribution
+```{r}
+ggtraceplot(jointFit1, "alphas")
+```
+
+Density plot
+```{r}
+ggdensityplot(jointFit1, "alphas")
+```
+
+Source: https://www.jstatsoft.org/article/view/v072i07
+Modeling PBC death rate, primary factor is serum bilirubin.
+
+Patients had on average 6.2 measurements, sd 3.8 measurements
+
+Loading packages
+```{r}
+library(JMbayes2)
+library(lattice)
+pbc2
+```
+
+Defining status 2 for composite event (transplantation or death)
+```{r}
+pbc2$status2 <- as.numeric(pbc2$status != "alive")
+pbc2.id$status2 <- as.numeric(pbc2.id$status != "alive")
+```
+
+Kaplan-Meier estimate of transplantation-free survival
+```{r}
+sfit <- survfit(Surv(years, status2) ~ drug, data = pbc2.id)
+plot(sfit, lty = 1:2, lwd = 2, col = 1:2, mark.time = FALSE, 
+     xlab = "Time (years)", ylab = "Transplantation-free Survival")
+```
+
+Sample subject-specific longitudinal trajectories
+```{r}
+pbc2$status2f <- factor(pbc2$status2, levels = 0:1,
+                        labels = c("alive", "transplanted/dead"))
+xyplot(log(serBilir) ~ year | status2f, group = id, data = pbc2,
+       panel = function(x, y, ...) {
+         panel.xyplot(x, y, type = "1", col = 1, ...)
+         panel.loess(x, y, col = 2, lwd = 2)
+       }, xlab = "Time (years)", ylab = "log(serum Bilirubin)")
+```
+
+Including natural cubic splines
+```{r}
+lmeFit.pbc1 <- lme(log(serBilir) ~ ns(year, 2), data = pbc2,
+                   random = ~ ns(year, 2) | id)
+```
+
+Building cox model
+```{r}
+coxFit.pbc1 <- coxph(Surv(years, status2) ~ drug * age, data = pbc2.id,
+                     x = TRUE) ## set x = TRUE to keep design matrix ??
+```
+
+
