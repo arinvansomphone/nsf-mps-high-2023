@@ -4,7 +4,285 @@ author: "Arin Vansomphone"
 date: "`r Sys.Date()`"
 output: html_document
 ---
-**Goal: To review on how to use survival models, learn JMBayes2 and how to use it**
+## ASA Dynamic Risk Predictions Workshop notes
+* JMbayes website (with examples): https://drizopoulos.github.io/JMbayes2/
+
+### Part 1: Introduction
+* Explicit outcomes: multiple longitudinal responses. time-to-events
+* Implicit outcomes: missing data, random visit times
+* Research question with AIDS dataset: how strong is the association between CD4 
+cell count and the risk of death?
+
+* Research question with PBC dataset: how strong is the association between bilirubin and the risk of death, can it be used for predictions of survival probabilities
+
+When to use separate analysis (only concerns either survival/longitudinal):
+* Does treatment affect survival?
+* Are average longitudinal evolutions different between males and females? 
+
+When to use joint analysis:
+* Complex effect estimation: how strong is the association between the longitudinal evolution of CD4 cell counts and the hazard of death? 
+  * Time-varying covariates vs. endogenous
+* Handling implicit outcomes: focus on longitudinal outcomes with dropouts and random visit times
+
+### Part 2: The joint-model
+Framework:
+* Use model to describe the evolution of the covariate
+* Fit longitudinal data into cox model
+![diagramofjointmodelframework](diagramofjointmodelframework.png)
+
+* Think about fitting the green line into the hazard function
+* Random effects explains all interdependencies in the data
+  * Longitudinal outcome is independent of TTE outcome
+  * Repeated measurements in longitudinal are independent of each other
+
+* For cox model in joint, requires full specification of joint distribution
+  * Use spline as a flexible model for baseline hazard
+  
+* jm() function assumes that the ordering of the patients is the same, and that the time unit is the same
+
+* Great explanation of function at 1:10
+
+* endogeneous: inside patients, such as bio markers
+* extrogeneous: outside patients, such as nurse caring for patient, hospital
+
+### Part 3: Functional forms
+* Instantaneous markers are not always optimal, sometimes other functional forms are needed to accurately model
+  * Time dependent 
+  * Cumulative effects (can be weighted)
+* functional form is specified by `functional_forms`
+  * `area()` calculates the cumulative effect
+  * `slope()` calculates the time-dependent slope
+  
+### Part 4: Dynamic predictions
+Dynamic prediction: survival probabilities are dynamically updated as additional longitudinal information is recorded
+
+Fitted model estimates conditional survival probabilities
+
+Model accounts all measurements present and before, but not in the future. Obviously becomes more accurate with more measurements
+
+Predictions at 2:05
+
+Functional forms have an effect on predictions, so choose the optimal one according to a model selection problem
+
+Model can predict using new data, does not get re-run 
+
+Accuracy for predictions:
+* Discrimination: classifying high-risk and low-risk patients
+  * Interested in events occuring in a medically-relevant interval
+  * sensitivity, AUC and ROC curve
+  * Use function `tvROC()`
+* Calibration: how well the joint model can accurately predict future events
+  * Use a calibration plot: `calibration_plot()`
+* Brier score: combining discrimination and calibration
+  * Lower brier score is better 
+  * Calculate using `tvBrier()`
+  * Take the square root of the brier score to find the average probability difference (less than 5% is good)
+* To measure predictive ability, validation sets are needed
+
+### Practical run-through
+Dataset: `prothro`, Liver Cirrhosis dataset
+```{r}
+library("JMbayes2")
+
+# linear mixed effects model
+lmeFit <- lme(pro ~ time + time:treat, data = prothro, random = ~ time | id)
+
+# cox model
+CoxFit <- coxph(Surv(Time, death) ~ treat, data = prothros)
+
+# joint-model
+jointFit <- jm(CoxFit, lmeFit, time_var = "time") 
+# add functional_forms argument to specify functional form
+
+summary(jointFit)
+```
+* Rule of thumb: Rhat needs to be below 1.1. If not, increase the number of iterations for MCMC
+
+Extract the data of patient 155
+```{r}
+dataP155 <- prothro[prothro$id == 155, ]
+dataP155$Time <- dataP155$death <- NULL # delete variable as we want to predict this
+```
+
+Note: if you want another longitudinal biomarker, need to make another linear model for it
+
+Prediction plot
+```{r}
+sfit <- predict(jointFit, newdata = dataP155[1, ], process = "event", 
+                times = seq(0, 10, length.out = 51),
+                return_newdata = TRUE)
+
+sfit
+```
+
+Plotting prediction plot
+```{r}
+plot(sfit)
+```
+
+Predicting the longitudinal outcome
+```{r}
+Lpred <- predict(jointFit, newdata = dataP155[1, ],
+                 times = seq(0, 10, length.out = 51),
+                 return_newdata = TRUE)
+
+plot(Lpred)
+```
+
+Combining the plots
+```{r}
+plot(Lpred, sfit)
+```
+
+Dynamic predictions
+```{r}
+n <- nrow(dataP155)
+for (i in seq_len(n)) {
+  Spred <- predict(jointFit, newdata = dataP155[1:i, ],
+                   process = "event", times = seq(0, 10, length.out = 51),
+                   return_newdata = TRUE)
+  Lpred <- predict(jointFit, newdata = dataP155[1:i, ],
+                   times = seq(0, 10, length.out = 51),
+                   return_newdata = TRUE)
+  plot(Lpred,Spred)
+}
+```
+
+ROC at 3 years with 1 year window
+```{r}
+roc <- tvROC(jointFit, newdata = prothro, Tstart = 3, Dt = 1)
+plot(roc)
+```
+
+AUC at 3 years with 1 year window
+```{r}
+tvAUC(roc)
+```
+
+Calibration plot at 3 years with 1 year window
+```{r}
+calibration_plot(jointFit, newdata = prothro, Tstart = 3, Dt = 1)
+```
+
+Brier score at 3 years with 1 year window
+```{r}
+tvBrier(jointFit, newdata = prothro, Tstart = 3, Dt = 1)
+```
+### Concluding remarks
+* Pay attention to:
+  * Model longitudinal flexibly using splines
+  * Consider functional form for joint model
+  
+## Tuning longitudinal data through splines
+Spline overview: https://rpubs.com/alecri/review_longitudinal
+
+* Linear spline: divide axis into segments and consider piecewise-linear trends. 
+
+* Locations where lines are tied together are known as knots.
+
+Data: Study of 162 girls on body fat percentage pre-menarcheal and post-menarcheal
+```{r}
+# loading packages
+library(labelled)   # labeling data
+library(rstatix)    # summary statistics
+library(ggpubr)     # convenient summary statistics and plots
+library(GGally)     # advanced plot
+library(car)        # useful for anova/wald test
+library(Epi)        # easy getting CI for model coef/pred
+library(lme4)       # linear mixed-effects models
+library(lmerTest)   # test for linear mixed-effects models
+library(emmeans)    # marginal means
+library(multcomp)   # CI for linear combinations of model coef
+library(geepack)    # generalized estimating equations
+library(ggeffects)  # marginal effects, adjusted predictions
+library(gt)         # nice tables
+library(tidyverse)
+
+# load data
+load(url("http://alecri.github.io/downloads/data/bodyfat.RData"))
+
+head(bodyfat)
+```
+
+```{r}
+# trajectories overtime
+ggplot(bodyfat, aes(agec, pbf)) +
+  geom_line(aes(group = id)) +
+  geom_smooth(se = FALSE, size = 2) +
+  geom_vline(xintercept = 12.86, linetype = "dashed") + 
+  labs(x = "Age, years", y = "Percent Body Fat")
+```
+
+```{r}
+# fitting model
+bodyfat <- bodyfat %>%
+  mutate(timepost = pmax(time, 0))
+lin_lspl0 <- lmer(pbf ~ time + timepost + (time + timepost | id), data = bodyfat)
+summary(lin_lspl0)
+```
+
+```{r}
+# slopes pre-menarcheal and post-menarcheal
+K <- rbind(
+  "population mean pre-menarcheal slope" = c(0, 1, 0),
+  "population mean post-menarcheal slope" = c(0, 1, 1)
+)
+tidy(glht(lin_lspl0, linfct = K), conf.int = TRUE)
+```
+
+```{r}
+sid <- c(4, 16)
+expand.grid(
+  time = seq(-6, 4.1, 0.05),
+  id = sid
+) %>%
+  mutate(timepost = pmax(time, 0)) %>%
+  bind_cols(
+    indiv_pred = predict(lin_lspl0, newdata = .),
+    marg_pred = predict(lin_lspl0, newdata = ., re.form = ~ 0)
+  ) %>%
+ggplot(aes(time, indiv_pred, group = id, col = factor(id))) +
+  geom_line(aes(y = marg_pred), col = "black", lwd = 1.5) +
+  geom_line(aes(linetype = "BLUP")) + #empirical best linear unbiased prediction
+  geom_point(data = filter(bodyfat, id %in% sid),
+             aes(y = pbf, shape = factor(id), col = factor(id))) +
+  guides(shape = "none") +
+  labs(x = "Time relative to menarche, years", y = "Percent Body Fat",
+       col = "Id", linetype = "Prediction")
+```
+
+
+Source: http://users.stat.umn.edu/~helwig/notes/smooth-spline-notes.html
+
+Data: prestige of Canadian occupations from 1971 along with average income
+
+```{r}
+# load data
+library(car)
+
+data(Prestige)
+head(Prestige)
+```
+```{r}
+# plot data
+plot(Prestige$income, Prestige$prestige,
+     xlab = "Income", ylab = "Prestige")
+```
+
+```{r}
+# fit model
+library(npreg)
+
+mod.ss <- with(Prestige, ss(income, prestige))
+mod.ss
+
+summary(mod.ss)
+```
+
+```{r}
+plot(mod.ss, xlab = "Income", ylab = "Prestige")
+with(Prestige, points(income, prestige))
+```
 
 ## Review on survival models
 Source: https://www.geeksforgeeks.org/survival-analysis-in-r/
@@ -122,6 +400,10 @@ autoplot(cox_fit)
 ### Notes on cox regression models
 * Need to be cautious when interpreting results because it assumes covariates are constant, and in many cases there are not
 
+* Hazard: the rate at which events happen. CPH assumes hazards are constant over time
+
+* Hazard ratio: ratio of hazard between covariates (such as male/female)
+
 * Look more into Concordance stats if wanting to use ROC curves to assess model performance
 
 Aalen's additive regression model shows how covariates change over time
@@ -135,7 +417,16 @@ aa_fit
 autoplot(aa_fit)
 ```
 
-## JMbayes2 model
+## Tuning cox proportional hazards regression
+Source: https://www.youtube.com/watch?v=TrS2M5imOt8&t=9s
+
+* `exp(coef)` shows the hazard ratio
+  * for quantitative variables, the hazard ratio compares a 1 unit difference
+* Concordance: goodness of fit for coxph models. Percentage of cases that model gets correct (50% is random guessing)
+* Try to improve concordance score by adding variables, testing nested models?
+
+
+## additional research on JMbayes2 model
 Source: https://drizopoulos.github.io/JMbayes2/articles/JMbayes2.html
 Primary function is `jm()`
 
@@ -161,7 +452,9 @@ summary(jointFit1)
 * Assume the instantaneous risk of an event at a specific time $t$ is associated with the value of the linear predictor of the longitudinal outcome at the same point $t$
 
 Traceplots:
+
 * MCMC stands for Markov chain Monte Carlo
+
 * Traceplots are used to determine how many iteration it will take to summarize the posterior distribution (convergence) (think Bayes and conditional probabilities)
   * If model converges, then traceplot moves around the mode of distribution
 ```{r}
@@ -172,53 +465,3 @@ Density plot
 ```{r}
 ggdensityplot(jointFit1, "alphas")
 ```
-
-Source: https://www.jstatsoft.org/article/view/v072i07
-Modeling PBC death rate, primary factor is serum bilirubin.
-
-Patients had on average 6.2 measurements, sd 3.8 measurements
-
-Loading packages
-```{r}
-library(JMbayes2)
-library(lattice)
-pbc2
-```
-
-Defining status 2 for composite event (transplantation or death)
-```{r}
-pbc2$status2 <- as.numeric(pbc2$status != "alive")
-pbc2.id$status2 <- as.numeric(pbc2.id$status != "alive")
-```
-
-Kaplan-Meier estimate of transplantation-free survival
-```{r}
-sfit <- survfit(Surv(years, status2) ~ drug, data = pbc2.id)
-plot(sfit, lty = 1:2, lwd = 2, col = 1:2, mark.time = FALSE, 
-     xlab = "Time (years)", ylab = "Transplantation-free Survival")
-```
-
-Sample subject-specific longitudinal trajectories
-```{r}
-pbc2$status2f <- factor(pbc2$status2, levels = 0:1,
-                        labels = c("alive", "transplanted/dead"))
-xyplot(log(serBilir) ~ year | status2f, group = id, data = pbc2,
-       panel = function(x, y, ...) {
-         panel.xyplot(x, y, type = "1", col = 1, ...)
-         panel.loess(x, y, col = 2, lwd = 2)
-       }, xlab = "Time (years)", ylab = "log(serum Bilirubin)")
-```
-
-Including natural cubic splines
-```{r}
-lmeFit.pbc1 <- lme(log(serBilir) ~ ns(year, 2), data = pbc2,
-                   random = ~ ns(year, 2) | id)
-```
-
-Building cox model
-```{r}
-coxFit.pbc1 <- coxph(Surv(years, status2) ~ drug * age, data = pbc2.id,
-                     x = TRUE) ## set x = TRUE to keep design matrix ??
-```
-
-
