@@ -1,0 +1,369 @@
+---
+title: "Week 2 work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+**Goal: to see how the extension of parsnip was set up and mimic the same framework to build up the extensions for `lme4`.**
+
+# Source 1: Multilevelmod
+```{r}
+library(tidymodels)
+library(multilevelmod)
+```
+
+Data: effects of sleep deprivation on reaction time
+```{r}
+data(sleepstudy, package = "lme4")
+
+sleepstudy %>%
+  ggplot(aes(x = Days, y = Reaction)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ Subject)
+```
+
+```{r}
+# create new data frame for hypothetical subject for prediction
+new_subject <- tibble(
+  Days = 0:9,
+  Subject = "one"
+)
+```
+
+### Generalized estimator equations (GEE)
+GEE estimates a correlation/covariance matrix that is not diagonal
+```{r}
+# creating correlation structure
+gee_spec <-
+  linear_reg() %>%
+  set_engine("gee", corstr = "exchangeable")
+
+gee_fit <-
+  gee_spec %>%
+  fit(Reaction ~ Days + id_var(Subject), data = sleepstudy)
+
+gee_fit
+```
+
+```{r}
+# running prediction
+predict(gee_fit, new_subject %>% select(Days)) %>%
+  bind_cols(new_subject)
+```
+
+### Generalized least squares
+```{r}
+library(nlme) 
+gls_spec <-
+  linear_reg() %>%
+  set_engine("gls", correlation = corCompSymm(form = ~ 1 | Subject))
+
+gls_fit <-
+  gls_spec %>%
+  fit(Reaction ~ Days, data = sleepstudy)
+
+gls_fit
+```
+
+```{r}
+# running predictions
+predict(gls_fit, new_subject %>% select(Days)) %>%
+  bind_cols(new_subject)
+```
+
+### Linear mixed effects model (lme)
+```{r}
+lme_spec <-
+  linear_reg() %>%
+  set_engine("lme", random = ~ 1 | Subject)
+
+lme_fit <-
+  lme_spec %>%
+  fit(Reaction ~ Days, data = sleepstudy)
+
+lme_fit
+```
+```{r}
+# running predictions
+predict(lme_fit, new_subject) %>%
+  bind_cols(new_subject)
+```
+
+```{r}
+# similar prediction command as a training set point
+predict(lme_fit, sleepstudy %>% filter(Subject == "308"))
+```
+
+### Models using lmer, glmer, and stan_glmer
+
+* `"lmer"`, `"glmer"`, and `"stan_glmer"` all use the same formula syntax for fitting
+
+```{r}
+# using lmer as an example
+lmer_spec <-
+  linear_reg() %>%
+  set_engine("lmer")
+
+lmer_fit <-
+  lmer_spec %>%
+  fit(Reaction ~ Days + (1|Subject), data = sleepstudy)
+
+lmer_fit
+```
+
+
+```{r}
+# running predictions
+predict(lmer_fit, new_subject) %>%
+  bind_cols(new_subject)
+```
+
+Helpful command: use this function to determine what packages are required for a model
+```{r}
+required_pkgs(lmer_spec)
+```
+
+Arguments for `"stan_glmer"` engine
+* `chains`: number of Markov chains, default is 4
+* `iter`: number of iterations for each chain, default is 2000 
+* `seed`: seed for random number generation
+* `cores`: number of cores to use when executing the chains in parallel
+* `prior`: prior distribution for the (non-hierarchical) regression coefficients
+* `prior_intercept`: prior distribution for the intercept
+
+### tidymodels workflows
+
+* use `add_variables()` instead of `add_formula()` 
+* use `formula` argument of `add_model()` to add the random effects formula
+```{r}
+lmer_wflow <-
+  workflow() %>%
+  add_variables(outcomes = Reaction, predictors = c(Days, Subject)) %>%
+  add_model(lmer_spec, formula = Reaction ~ Days + (1|Subject))
+
+lmer_wflow %>% fit(data = sleepstudy)
+```
+
+```{r}
+# workflow recipe
+rec <- recipe(Reaction ~ Days + Subject, data = sleepstudy) %>%
+  add_role(Subject, new_role = "exp_unit") %>%
+  step_zv(all_predictors(), -has_role("exp_unit"))
+
+lmer_wflow %>%
+  remove_variables() %>%
+  add_recipe(rec) %>%
+  fit(data = sleepstudy)
+```
+
+Plenty of helper functions in broom.mixed and tidybayes packages. Example of `extract_fit_engine()` shown below
+```{r}
+lmer_wflow %>%
+  fit(data = sleepstudy) %>%
+  extract_fit_engine()
+```
+
+# Source 2: A Beginner's Introduction to Mixed Effects Models
+Data: hockey player stats, pp60 measures player's total points per 60 minutes of game play, TOI measures time on ice per game 
+
+* We use mixed effects models for longitudinal data because observations are not independent (previous measure has an impact on current measure)
+
+### Framework of a mixed effects model
+* Mixed effects = fixed + random effects
+  * Fixed effects = standard regression model, independent has effect on dependent variable
+  * Random effect = categorical variable that is likely influencing the patterns of measurements (in data example, random effect is player)
+    * Useful for capturing effects that are not observable elsewhere in the data
+    
+```{r}
+#loading packages
+library(lme4)
+library(tidymodels)
+library(JMbayes2)
+
+# preparing the data
+df <- prothro # used prothro dataset because hockey dataset not available
+head(df)
+```
+
+```{r}
+m1 <- lmer(pro ~ treat + (1 | id), #(1| id ) represents random variable
+           data = df)
+
+summary(m1)
+```
+
+```{r}
+# use function to see individual random effects
+head(ranef(m1))
+```
+
+```{r}
+# for predictions
+## predict(m1)
+
+## predict(m1, re.form = NA)
+```
+
+### Running the model with tidymodels
+```{r}
+# packages required
+library(tidymodels)
+library(multilevelmod)
+
+lmer_spec <-
+  linear_reg() %>%
+  set_engine("lmer")
+
+using_tidymodels <-
+  lmer_spec %>%
+  fit(pro ~ treat + (1 | id),
+      data = df)
+
+using_tidymodels
+```
+
+### More applications
+* In general, mixed models are useful whenever a group is affecting an outcome
+* When data has a nested/hierarchal structure
+
+* To investigate clustering:
+  * Plot out complete data filtered by groups
+  * Create a null model (determination by ICC):
+```{r}
+library(jtools)
+
+m0 <- lmer(pro ~ 1 + (1 | id),
+           data = df)
+
+jtools::summ(m0)
+```
+
+### Varying slopes
+* Can also incorporate random slopes (for quantitative variables) to allow effect of selective variables to vary across subjects:
+```{r}
+# m_slope <- lmer(pro ~ treat + (1 + time | player),
+#                data = df)
+# not excellent example use, but function structure remains identical
+```
+
+# Source 3: Survival analysis in tidymodels
+
+Note: `parsnip` is the package that streamlines the workflow of the various model types of R
+
+```{r}
+# package
+library(devtools)
+devtools::install_github("tidymodels/censored")
+```
+```{r}
+library(censored)
+
+decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("censored regression")
+```
+### Model fitting
+Data description: bladder cancer dataset from survival
+`rx` = treatment
+`size` = cm of largest initial tumor
+`number` = initial number of tumors
+`enum` = number of recurrence
+```{r}
+library(survival)
+
+bladder_train <- bladder[-c(1:3),]
+bladder_test <- bladder[1:3,]
+
+cox_spec <- proportional_hazards(penalty = 0.123) %>%
+  set_engine("glmnet")
+
+f_fit <- fit(cox_spec,
+             Surv(stop, event) ~ rx + size + number + strata(enum),
+             data = bladder_train)
+
+f_fit
+```
+
+### Prediction
+* predict function returns a nested tibble if `time` contains multiple time points, which can be used to approximate survival curves
+```{r}
+f_pred <- predict(f_fit, new_data = bladder_test,
+                  type = "survival", time = seq(0, 20, 1))
+
+f_pred <- f_pred %>%
+  mutate(id = factor(1:3)) %>%
+  unnest(cols = .pred)
+
+f_pred %>%
+  ggplot(aes(x = .eval_time, y = .pred_survival, col = id)) +
+  geom_step()
+```
+
+Notes on reference observations:
+* in the survival package, the observation $x$ is centered with the mean predictor before the weighted linear combination is calculated
+* in contrast, all engines in censored use a reference observation of 0
+
+### Comparison of predictions between survival, censored, and linear predictor
+```{r}
+library(tidymodels)
+library(ggplot2)
+library(prodlim)
+set.seed(43500)
+
+# add 0.5 to X2 numeric predicor (with mean 0) to demonstrate the effect of centering 
+train_dat <- SimSurv(2000) %>% mutate(X2 = X2 + 0.5)
+test_dat <- SimSurv(20) %>% mutate(X2 = X2 + 0.5)
+test_pred <- test_dat[, 5:6]
+
+head(train_dat)
+```
+
+```{r}
+# compare value of linear predictor using the true coefficients of 1 with the predictions from the survival package
+fit_survival <- coxph(Surv(time, status) ~ X1 + X2, data = train_dat)
+pred_survival <- predict(fit_survival, newdata = test_pred)
+
+pred <- bind_cols(
+  test_pred %>% mutate(linear_pred = X1 * 1 + X2 * 1),
+  tibble(pred_survival = pred_survival)
+)
+```
+
+```{r}
+# plot
+pred %>%
+  ggplot(aes(linear_pred, pred_survival)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+```{r}
+# measuring performance 
+fit_censored <- proportional_hazards() %>%
+  set_engine("survival") %>%
+  fit(Surv(time, status) ~ X1 + X2, data = train_dat)
+pred_censored <- predict(fit_censored, type = "linear_pred", new_data = test_pred)
+
+pred <- bind_cols(
+  pred,
+  pred_censored %>% rename(pred_censored = .pred_linear_pred)
+)
+
+pred %>%
+  ggplot(aes(linear_pred, pred_censored)) +
+  geom_point() +
+  geom_abline(slope = -1, intercept = 0)
+```
+
+### Model and prediction types available in censored
+![](availablemodelschartforcensored.png)
+
+# Central lessons from week 2
+* Learned to use various types of mixed models in `parsnip` workflow to produce predictions
+* Learned framework of `lme4` model
+* Learned to use `censored` package as means to generate survival curves from `parsnip` workflow
+
+
+
