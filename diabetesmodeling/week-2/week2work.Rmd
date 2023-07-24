@@ -126,11 +126,17 @@ required_pkgs(lmer_spec)
 ```
 
 Arguments for `"stan_glmer"` engine
+
 * `chains`: number of Markov chains, default is 4
+
 * `iter`: number of iterations for each chain, default is 2000 
+
 * `seed`: seed for random number generation
+
 * `cores`: number of cores to use when executing the chains in parallel
+
 * `prior`: prior distribution for the (non-hierarchical) regression coefficients
+
 * `prior_intercept`: prior distribution for the intercept
 
 ### tidymodels workflows
@@ -166,14 +172,13 @@ lmer_wflow %>%
 ```
 
 # Source 2: A Beginner's Introduction to Mixed Effects Models
-Data: hockey player stats, pp60 measures player's total points per 60 minutes of game play, TOI measures time on ice per game 
 
 * We use mixed effects models for longitudinal data because observations are not independent (previous measure has an impact on current measure)
 
 ### Framework of a mixed effects model
 * Mixed effects = fixed + random effects
   * Fixed effects = standard regression model, independent has effect on dependent variable
-  * Random effect = categorical variable that is likely influencing the patterns of measurements (in data example, random effect is player)
+  * Random effect = categorical variable that is likely influencing the patterns of measurements
     * Useful for capturing effects that are not observable elsewhere in the data
     
 ```{r}
@@ -265,11 +270,13 @@ decision_tree() %>%
   set_mode("censored regression")
 ```
 ### Model fitting
+
 Data description: bladder cancer dataset from survival
-`rx` = treatment
-`size` = cm of largest initial tumor
-`number` = initial number of tumors
-`enum` = number of recurrence
+
+* `rx` = treatment
+* `size` = cm of largest initial tumor
+* `number` = initial number of tumors
+* `enum` = number of recurrence
 ```{r}
 library(survival)
 
@@ -301,18 +308,18 @@ f_pred %>%
   geom_step()
 ```
 
-Notes on reference observations:
-* in the survival package, the observation $x$ is centered with the mean predictor before the weighted linear combination is calculated
-* in contrast, all engines in censored use a reference observation of 0
-
 ### Comparison of predictions between survival, censored, and linear predictor
+Notes on reference observations:
+
+* in the survival package, the observation $x$ is centered with the mean predictor before the weighted linear combination is calculated
+* in contrast, all engines in `censored` use a reference observation of 0
 ```{r}
 library(tidymodels)
 library(ggplot2)
 library(prodlim)
 set.seed(43500)
 
-# add 0.5 to X2 numeric predicor (with mean 0) to demonstrate the effect of centering 
+# add 0.5 to X2 numeric predictor (with mean 0) to demonstrate the effect of centering 
 train_dat <- SimSurv(2000) %>% mutate(X2 = X2 + 0.5)
 test_dat <- SimSurv(20) %>% mutate(X2 = X2 + 0.5)
 test_pred <- test_dat[, 5:6]
