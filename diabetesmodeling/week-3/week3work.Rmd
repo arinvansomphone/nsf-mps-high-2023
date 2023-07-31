@@ -5,7 +5,9 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+**Goal: Fit a longitudinal model onto the data and evaluate performance metrics**
+
+```{r message=FALSE}
 # load packages
 library(readr)
 library(tidyverse)
@@ -15,6 +17,7 @@ library(multilevelmod)
 library(lme4)
 library(jtools)
 library(censored)
+library(flexplot)
 
 # load data
 bloodpressure <- read_csv("bloodpressure.csv")
@@ -26,9 +29,9 @@ otherlabs <- read_csv("otherlabs.csv")
 accordkey <- read_csv("accord_key.csv")
 ```
 
-# Creating a Robust Longitudinal Model of hba1c
+# Longitudinal Model of hba1c
 ```{r}
-# removing unnecessary columns from accordkey
+# removing unnecessary columns from accord key
 accordkey <- accordkey %>%
   select(-c(trial_elig, network, arm))
 
@@ -44,91 +47,109 @@ data <- inner_join(data, accordkey,
 
 data <- data %>%
   filter(Visit != "EXIT") # remove exit observations
-data[data == "BLR"] <- "00" # change baseline to 0 months
-data$Visit <- gsub("F", "", data$Visit) # remove "F" at each visit entry
-data$Visit <- as.numeric(data$Visit) # turn visit to numeric
+
+# change visit to ordered factor
+data[data == "BLR"] <- "00"
+data$Visit <- gsub("F", "", data$Visit)
+data$Visit <- as.numeric(data$Visit)
+data <- data %>%
+  mutate(Visit = factor(Visit, ordered = T))
+
+# change some variables to factor
+cols <- c("MaskID", "female", "treatment", "cvd_hx_baseline", "raceclass")
+data[cols] <- lapply(data[cols], factor)
+data
 ```
 
 ### Visualizing the data
-```{r}
+```{r warning=FALSE}
 data %>%
   filter(MaskID %in% c(100001, 100002, 100003, 100004, 100005, 100006)) %>%
   ggplot(aes(x = Visit, y = hba1c)) +
   geom_point() +
   geom_line() + 
+  geom_path(group = 1) +
   facet_wrap(~MaskID)
 ```
 
 ```{r}
-# test random effect impact of MaskID
-m0 <- lmer(hba1c ~ 1 + (1 | MaskID),
+# fit model
+full <- lmer(hba1c ~ Visit + chol + trig + vldl + ldl + hdl + sbp + dbp + hr + 
+               fpg + alt + female + baseline_age + treatment + cvd_hx_baseline +
+               raceclass + (1 | MaskID), # patient is random variable
            data = data)
 
-jtools::summ(m0)
+require(flexplot)
+estimates(full)
+```
+
+Note: figure out way to overcome missing data. Use baseline measurements for all observations? 
+
+Note on design effect: the mixed model is equivalent to multiplying the dataset by $x$ factor (1 means mixed model does not contribute anything)
+
+```{r}
+# visualize model
+flexplot::visualize(full, plot = "model",
+                    formula = hba1c ~ Visit + MaskID,
+                    sample = 100)
 ```
 
 ```{r}
-# creating lmer
-m1 <- lmer(hba1c ~ . - MaskID + (1 | MaskID), # patient is random variable
-           data = data)
-
-summary(m1)
+# residual plot
+flexplot::visualize(full, plot = "residuals")
 ```
-
-```{r}
-plot(m1)
-```
-
-```{r}
-# creating new subject for prediction
-new_subject <- tibble(
-  Visit = 0:84, 
-  MaskID = 100001
-)
-```
-
 
 # Creating a survival model
 ```{r}
 # adding survival outcomes to dataset
-cvdoutcomes <- cvdoutcomes %>%
-  select(MaskID, fuyrs_po, censor_po)
+# cvdoutcomes <- cvdoutcomes %>%
+ # select(MaskID, fuyrs_po, censor_po)
 
-data <- inner_join(data, cvdoutcomes, 
-                          by = ('MaskID' = 'MaskID'))
+#data <- inner_join(data, cvdoutcomes, 
+                         # by = ('MaskID' = 'MaskID'))
 ```
 
 
 ```{r}
 # splitting train and test
-data_train <- data[-c(1:5),]
-data_test <- data[1:5,]
+#data_train <- data[-c(1:5),]
+#data_test <- data[1:5,]
 ```
 
 ```{r}
 # creating survival model
-cox_spec <- proportional_hazards(penalty = 0.123) %>%
-  set_engine("glmnet")
+# cox_spec <- proportional_hazards(penalty = 0.123) %>%
+  # set_engine("glmnet")
 
-f_fit <- fit(cox_spec,
-             Surv(fuyrs_po, censor_po) ~ .,
-             data = data_train)
+# f_fit <- fit(cox_spec,
+             # Surv(fuyrs_po, censor_po) ~ .,
+             # data = data_train)
 
-f_fit
+# f_fit
 ```
 
 ```{r}
 # prediction
-f_pred <- predict(f_fit, new_data = data_test,
-                  type = "survival", time = seq(0, 20, 1))
+# f_pred <- predict(f_fit, new_data = data_test,
+                 # type = "survival", time = seq(0, 20, 1))
 
-f_pred <- f_pred %>%
-  mutate(MaskID = factor(1:5)) %>%
-  unnest(cols = .pred)
+# f_pred <- f_pred %>%
+ # mutate(MaskID = factor(1:5)) %>%
+ # unnest(cols = .pred)
 
-f_pred %>%
-  ggplot(aes(x = .eval_time, y = .pred_survival, col = MaskID)) +
-  geom_step()
+#f_pred %>%
+ # ggplot(aes(x = .eval_time, y = .pred_survival, col = MaskID)) +
+  # geom_step()
 ```
 
+# Week 3 summary
 
+* Fit a baseline longitudinal model using `lme4`
+
+* Determined methods of measuring performance through `flexplot`
+
+**Next week's goals**
+
+* Refine longitudinal model by adding parameters / looking into reduced model
+
+* Build baseline survival model 
