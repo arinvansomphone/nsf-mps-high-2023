@@ -1,0 +1,330 @@
+---
+title: "Week 5 Work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r message=FALSE}
+# load packages
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(tidymodels)
+library(multilevelmod)
+library(lme4)
+library(jtools)
+library(censored)
+library(flexplot)
+library(survival)
+library(ggfortify)
+library(flexplot)
+library(splines)
+library(nlme)
+library(performance)
+library(effects)
+library(lspline)
+```
+
+```{r message=FALSE}
+# load data
+bloodpressure <- read_csv("bloodpressure.csv")
+cvdoutcomes <- read_csv("cvdoutcomes.csv")
+hba1c <- read_csv("hba1c.csv")
+lipids <- read_csv("lipids.csv")
+microvascularoutcomes <- read_csv("microvascularoutcomes.csv")
+otherlabs <- read_csv("otherlabs.csv")
+accordkey <- read_csv("accord_key.csv")
+```
+
+# Improving hba1c longitudinal model 
+```{r}
+# removing unnecessary variables from accord key
+accordkey <- accordkey %>%
+  select(-c(trial_elig, network, treatment))
+
+# assembling covariates into one dataset
+df <- inner_join(hba1c, 
+                 lipids, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 bloodpressure, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 otherlabs, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 accordkey, 
+                 by = c('MaskID' = 'MaskID'))
+df
+```
+
+```{r}
+# remove exit observations
+df <- df %>%
+  filter(Visit != "EXIT")
+
+# change visit to numeric
+df[df == "BLR"] <- "00"
+df$Visit <- str_replace(df$Visit, "F", " ")
+df$Visit <- as.numeric(df$Visit)
+
+# change some variables to factor
+cols <- c("MaskID", "female", "cvd_hx_baseline", "raceclass", "arm")
+df[cols] <- lapply(df[cols], factor)
+df
+```
+
+```{r}
+# count number of NAs in each column
+sapply(df, function(x) sum(is.na(x)))
+```
+
+```{r}
+# substitute covariates with many NAs to baseline only
+baselinemeasurements <- df %>%
+  filter(Visit == 0) %>%
+  select(MaskID, cpk, potassium, screat, gfr, ualb, ucreat, uacr)
+
+df <- inner_join(df, 
+                 baselinemeasurements, 
+                 by = ("MaskID"))
+
+df <- df %>%
+  select(-c(cpk.x, potassium.x, screat.x, ualb.x, gfr.x, ucreat.x, uacr.x)) %>%
+  rename(bl_cpk = cpk.y, bl_potassium = potassium.y, bl_screat = screat.y, 
+         bl_ualb = ualb.y, bl_gfr = gfr.y, bl_ucreat = ucreat.y, 
+         bl_uacr = uacr.y)
+df
+```
+
+```{r}
+sapply(df, function(x) sum(is.na(x)))
+```
+
+Create small dataset for testing random effects and comparing models. 
+```{r}
+smalldf <- df %>% 
+  filter(!MaskID %in% c("100026", "100028")) %>% # left out due to NAs
+  head(196)
+smalldf
+```
+
+## What variables should have a random effect?
+
+### Arm
+```{r}
+# fit full model
+noarmrandom <- lmer(hba1c ~ bs(Visit, degree = 1, knots = 12) + chol + trig + vldl + hdl + ldl + sbp + dbp + hr +
+               fpg + alt + female + baseline_age + arm + cvd_hx_baseline +
+               raceclass + bl_cpk + bl_potassium + bl_screat + bl_gfr + bl_ualb
+             + bl_ucreat + bl_uacr + (1| MaskID), data = smalldf)
+noarmrandom
+```
+
+```{r}
+armrandom <- lmer(hba1c ~ bs(Visit, degree = 1, knots = 12) + chol + arm + trig + vldl + hdl + ldl + sbp + dbp + hr +
+               fpg + alt + female + baseline_age + cvd_hx_baseline +
+               raceclass + bl_cpk + bl_potassium + bl_screat + bl_gfr + bl_ualb
+             + bl_ucreat + bl_uacr + (1 + arm | MaskID), data = smalldf)
+armrandom
+```
+
+```{r}
+# anova test
+compare_performance(noarmrandom, armrandom, rank = T) 
+```
+
+Conclude that arm should be a fixed variable only. 
+
+### Visit
+```{r}
+visitrandom <- lmer(hba1c ~bs(Visit, degree = 1, knots = 12) + chol + trig + vldl + hdl + ldl + sbp + dbp + hr +
+               fpg + alt + female + baseline_age + arm + cvd_hx_baseline +
+               raceclass + bl_cpk + bl_potassium + bl_screat + bl_gfr + bl_ualb
+             + bl_ucreat + bl_uacr + (1 + Visit | MaskID), data = smalldf)
+visitrandom
+```
+
+```{r}
+novisitrandom <- lmer(hba1c ~bs(Visit, degree = 1, knots = 12) + chol + trig + vldl + hdl + ldl + sbp + dbp + hr +
+               fpg + alt + female + baseline_age + arm + cvd_hx_baseline +
+               raceclass + bl_cpk + bl_potassium + bl_screat + bl_gfr + bl_ualb
+             + bl_ucreat + bl_uacr + (1 | MaskID), data = smalldf)
+novisitrandom
+```
+
+```{r}
+compare_performance(visitrandom, novisitrandom, rank = T) 
+```
+
+Conclude that visit should have a random slope. 
+
+## Which covariates to choose?
+```{r}
+full <- lmer(hba1c ~ bs(Visit, degree = 1, knots = 12) + chol + sbp + dbp +
+               fpg + female + baseline_age + arm + raceclass + bl_cpk + bl_screat + bl_gfr
+             + bl_ucreat + (1 + Visit | MaskID), data = smalldf)
+full
+```
+
+```{r}
+partial <- lmer(hba1c ~ bs(Visit, degree = 1, knots = 12) + sbp + dbp +
+               fpg + female + baseline_age + raceclass + arm + bl_cpk + bl_screat + bl_gfr
+              + bl_ucreat + (1 + Visit | MaskID), data = smalldf)
+partial
+```
+
+```{r}
+compare_performance(full, partial, rank = T) 
+```
+
+### Variables kept:
+
+* Visit 
+* bl_gfr
+* bl_screat
+* bl_cpk
+* baseline_age
+* female (gender)
+* fpg
+* sbp
+* dbp
+* Visit
+* arm
+* raceclass
+
+### Variables disgarded:
+
+* bl_uacr
+* bl_ualb
+* cvd_hx_baseline
+* hr
+* hdl
+* ldl
+* vldl
+* trig
+* chol
+* bl_potassium 
+* alt
+
+```{r}
+original <- lmer(hba1c ~ Visit + chol + trig + vldl + hdl + ldl + sbp + dbp + hr +
+               fpg + alt + female + baseline_age + arm + cvd_hx_baseline +
+               raceclass + bl_cpk + bl_potassium + bl_screat + bl_gfr + bl_ualb
+             + bl_ucreat + bl_uacr + (1 | MaskID), data = smalldf)
+original
+```
+
+```{r}
+final <- lmer(hba1c ~ lspline(Visit, knots = c(12)) + sbp + dbp +
+               fpg + female + baseline_age + raceclass + arm + bl_cpk + bl_screat + bl_gfr
+              + bl_ucreat + (1 + Visit | MaskID), data = smalldf)
+final
+```
+
+```{r}
+compare_performance(original, final, rank = T)
+```
+
+```{r}
+plot(compare_performance(original, final))
+```
+
+Our final model is significantly improved. 
+
+```{r}
+model_performance(final)
+```
+
+## Performance plots 
+
+```{r}
+# flexplot residual plot
+flexplot::visualize(final, plot = "residuals")
+```
+
+```{r}
+# from the performance package
+check_model(final)
+```
+
+## Predictions for longitudinal model
+```{r}
+smalldf %>%
+  filter(!is.na(hba1c)) %>%
+  mutate(pred = predict(final)) %>%
+  filter(MaskID %in% c(100001, 100002, 100012)) %>%
+  ggplot(aes(x = Visit)) +
+  geom_line(aes(y = hba1c, group = MaskID, color = "Actual")) +
+  geom_line(aes(y = pred, group = MaskID, color = "Prediction")) +
+  labs(x = "Visit (months)") +
+  facet_wrap(~MaskID) +
+  scale_color_manual(values = c("Actual" = "black",
+                                "Prediction" = "purple"))
+```
+
+Question: why is spline not working in model?
+
+# Create survival model with tidymodels
+```{r}
+# adding survival outcomes to dataset
+cvdoutcomes <- cvdoutcomes %>%
+  select(MaskID, fuyrs_po, censor_po)
+cvdoutcomes$MaskID <- as.factor(cvdoutcomes$MaskID)
+
+df <- inner_join(df, 
+                   cvdoutcomes, 
+                   by = ('MaskID' = 'MaskID'))
+df
+```
+
+```{r}
+# setting up engine
+library(censored)
+
+decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("censored regression")
+```
+
+```{r}
+# splitting training and testing data
+library(survival)
+
+train <- df[-c(1, 8, 16),]
+test <- df[c(1, 8, 16),]
+```
+
+```{r}
+train
+```
+
+```{r}
+test
+```
+
+```{r}
+# fitting model
+cox_spec <- proportional_hazards(penalty = 0.123) %>%
+  set_engine("glmnet")
+
+f_fit <- fit(cox_spec, Surv(fuyrs_po, 1-censor_po) ~ hba1c + sbp + dbp +
+               fpg + female + baseline_age + raceclass + bl_cpk + bl_screat + bl_gfr + bl_ucreat + arm, data = train)
+f_fit
+```
+
+```{r}
+# prediction and plotting
+f_pred <- predict(f_fit, new_data = test, 
+                  type = "survival", time = seq(0, 7, 0.5))
+
+f_pred <- f_pred %>%
+  mutate(MaskID = factor(1:3)) %>%
+  unnest(cols = .pred)
+
+f_pred %>%
+  ggplot(aes(x = .eval_time, y = .pred_survival, col = MaskID)) + 
+  geom_step()
+```
+
+Why is my model producing the same curve for different patients?
