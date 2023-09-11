@@ -1,0 +1,226 @@
+---
+title: "Week 7 work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r message=FALSE}
+# load packages
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(tidymodels)
+library(multilevelmod)
+library(lme4)
+library(jtools)
+library(censored)
+library(flexplot)
+library(survival)
+library(ggfortify)
+library(flexplot)
+library(splines)
+library(nlme)
+library(performance)
+library(effects)
+library(lspline)
+```
+
+```{r message=FALSE}
+# load data
+bloodpressure <- read_csv("bloodpressure.csv")
+cvdoutcomes <- read_csv("cvdoutcomes.csv")
+hba1c <- read_csv("hba1c.csv")
+lipids <- read_csv("lipids.csv")
+microvascularoutcomes <- read_csv("microvascularoutcomes.csv")
+otherlabs <- read_csv("otherlabs.csv")
+accordkey <- read_csv("accord_key.csv")
+```
+
+```{r}
+# removing unnecessary variables from accord key
+accordkey <- accordkey %>%
+  select(-c(trial_elig, network, treatment))
+
+# assembling covariates into one dataset
+df <- inner_join(hba1c, 
+                 lipids, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 bloodpressure, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 otherlabs, 
+                 by = c('MaskID' = 'MaskID', 'Visit' = 'Visit'))
+df <- inner_join(df, 
+                 accordkey, 
+                 by = c('MaskID' = 'MaskID'))
+df
+```
+
+```{r}
+# remove exit observations
+df <- df %>%
+  filter(Visit != "EXIT")
+
+# change visit to numeric
+df[df == "BLR"] <- "00"
+df$Visit <- str_replace(df$Visit, "F", " ")
+df$Visit <- as.numeric(df$Visit)
+
+# change some variables to factor
+cols <- c("MaskID", "female", "cvd_hx_baseline", "raceclass", "arm")
+df[cols] <- lapply(df[cols], factor)
+df
+```
+
+```{r}
+# substitute covariates with many NAs to baseline only
+baselinemeasurements <- df %>%
+  filter(Visit == 0) %>%
+  select(MaskID, cpk, potassium, screat, gfr, ualb, ucreat, uacr)
+
+df <- inner_join(df, 
+                 baselinemeasurements, 
+                 by = ("MaskID"))
+
+df <- df %>%
+  select(-c(cpk.x, potassium.x, screat.x, ualb.x, gfr.x, ucreat.x, uacr.x)) %>%
+  rename(bl_cpk = cpk.y, bl_potassium = potassium.y, bl_screat = screat.y, 
+         bl_ualb = ualb.y, bl_gfr = gfr.y, bl_ucreat = ucreat.y, 
+         bl_uacr = uacr.y)
+df
+```
+
+```{r}
+smalldf <- df %>% 
+  filter(!MaskID %in% c("100026", "100028")) %>% # left out due to NAs
+  head(196)
+smalldf
+```
+
+# Improving longitudinal model
+
+## Fixing linear spline issue
+```{r}
+m1 <- lmer(hba1c ~ lspline(Visit, knots = c(12)) + sbp + dbp +
+               fpg + female + baseline_age + raceclass + arm + bl_cpk + bl_screat + bl_gfr
+              + bl_ucreat + (1 + Visit | MaskID), data = smalldf)
+m1
+```
+
+```{r}
+smalldf %>%
+  filter(!is.na(hba1c)) %>%
+  mutate(pred = predict(m1)) %>%
+  filter(MaskID %in% c(100001, 100002, 100012)) %>%
+  ggplot(aes(x = Visit)) +
+  geom_line(aes(y = hba1c, group = MaskID, color = "Actual")) +
+  geom_line(aes(y = pred, group = MaskID, color = "Prediction")) +
+  labs(x = "Visit (months)") +
+  facet_wrap(~MaskID) +
+  scale_color_manual(values = c("Actual" = "black",
+                                "Prediction" = "purple"))
+```
+
+```{r}
+# relabel visit to categorical variable
+smalldf_update <- smalldf %>%
+  mutate(Visit2 = case_when(
+           Visit == 0 ~ "BLR",
+           Visit > 0 & Visit <= 8 ~ "0-8 months",
+           Visit > 4 ~ "After 8 months"
+         ),
+         Visit2 = factor(Visit2, levels = c("BLR", "0-8 months", "After 8 months")))
+smalldf_update
+```
+
+```{r}
+m2 <- lmer(hba1c ~ Visit2 + sbp + dbp +
+               fpg + female + baseline_age + raceclass + arm + bl_cpk + bl_screat + bl_gfr
+              + bl_ucreat + (1 + Visit2 | MaskID), data = smalldf_update)
+m2
+```
+
+```{r}
+smalldf_update %>%
+  mutate(pred = predict(m2)) %>%
+  filter(MaskID %in% c(100001, 100002, 100012)) %>%
+  ggplot(aes(x = Visit)) +
+  geom_line(aes(y = hba1c, group = MaskID, color = "Actual")) + 
+  geom_line(aes(y = pred, group = MaskID, color = "Prediction")) +
+  labs(x = "Visit (months)") +
+  facet_wrap(~MaskID) + 
+  scale_color_manual(values = c("Actual" = "black",
+                                "Prediction" = "purple"))
+```
+
+```{r}
+compare_performance(m1, m2, rank = T)
+```
+
+Same exact result?
+
+# Getting survival model predictions to work
+```{r}
+# adding survival outcomes to dataset
+cvdoutcomes <- cvdoutcomes %>%
+  select(MaskID, fuyrs_po, censor_po)
+cvdoutcomes$MaskID <- as.factor(cvdoutcomes$MaskID)
+
+df <- inner_join(df, 
+                   cvdoutcomes, 
+                   by = ('MaskID' = 'MaskID'))
+df
+```
+
+```{r}
+# setting up engine
+library(censored)
+
+decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("censored regression")
+```
+
+```{r}
+# splitting training and testing data
+library(survival)
+
+train <- df[-c(1, 8, 28),]
+test <- df[c(1, 8, 28),]
+train
+```
+
+```{r}
+train
+```
+
+```{r}
+test
+```
+
+```{r}
+# fitting model
+cox_spec <- proportional_hazards(penalty = 0.123) %>%
+  set_engine("glmnet")
+
+f_fit <- fit(cox_spec, Surv(fuyrs_po, 1-censor_po) ~ hba1c + sbp + dbp +
+               fpg + female + baseline_age + raceclass + bl_cpk + bl_screat + bl_gfr + bl_ucreat + strata(arm), data = train)
+f_fit
+```
+
+```{r}
+# prediction and plotting
+f_pred <- predict(f_fit, new_data = test, 
+                  type = "survival", time = seq(0, 7, 0.5))
+
+f_pred <- f_pred %>%
+  mutate(MaskID = factor(c(100001, 100002, 100006))) %>%
+  unnest(cols = .pred)
+
+f_pred %>%
+  ggplot(aes(x = .eval_time, y = .pred_survival, col = MaskID)) + 
+  geom_step()
+```
+
+Issue was needing to include a `strata()` term.
